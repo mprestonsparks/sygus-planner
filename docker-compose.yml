@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  sygus-planner:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+    command: /bin/bash
+    stdin_open: true
+    tty: true

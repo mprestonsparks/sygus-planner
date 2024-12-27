@@ -50,11 +50,26 @@ sygus-planner/
 
 ---
 
-## Installation
-``` bash
-pip install -r requirements.txt
+## Installation & Development
+This project uses Docker to ensure consistent development across different platforms (Windows, macOS, Linux).
+
+### Quick Start
+1. For development (with live code updates):
+```bash
+docker-compose up -d
+docker-compose exec sygus-planner bash
 ```
 
+2. For running tests:
+```bash
+docker-compose run --rm sygus-planner python -m pytest
+```
+
+3. For building and running without docker-compose:
+```bash
+docker build -t sygus-planner .
+docker run -it sygus-planner bash
+```
 
 ## Usage
 ``` python
@@ -76,18 +91,3 @@ async def main():
         input_tasks=input_tasks,
         output_file="generated_dag.json"
     )
-```
-
-## Development
-``` bash
-# Setup development environment
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run linting
-flake8
-```
