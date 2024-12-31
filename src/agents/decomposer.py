@@ -1,94 +1,141 @@
 # src/agents/decomposer.py
 
-from typing import List, Dict, Optional
-import z3
-from datetime import datetime
+"""Task decomposition agent."""
 import uuid
+import logging
+from typing import Dict, List, Optional, Any, Union
+from pathlib import Path
+from datetime import datetime
 import json
 from dataclasses import asdict
-
 from ..core.data_structures import PrimitiveTask, ValidationResult
 from ..core.exceptions import TaskDecompositionError
 from .base import BaseAgent
 from ..llm.manager import LLMManager
 from ..utils.validation import validate_primitive_task
+import z3
+import os
 
 class DecomposerAgent(BaseAgent):
     def __init__(self):
+        """Initialize DecomposerAgent"""
         super().__init__(
             agent_id=str(uuid.uuid4()),
             agent_type="Decomposer"
         )
         self.llm_manager = LLMManager()
+        self.logger = logging.getLogger(f"{self.__class__.__name__}_{self.agent_id}")
         self.z3_solver = z3.Solver()
         self.known_primitives = set()
 
-    async def decompose_task(self, task: dict) -> List[PrimitiveTask]:
-        await self.log_action("decompose_task", task)
-        
+    async def decompose_task(self, task: Dict[str, Any]) -> List[PrimitiveTask]:
+        """Decompose a high-level task into primitive tasks using LLM."""
         try:
-            if self.is_primitive_description(task):
-                primitive_task = self.convert_to_primitive_task(task)
-                if validate_primitive_task(primitive_task):
-                    return [primitive_task]
-            
             llm_response = await self.llm_manager.get_llm_response(
                 prompt_type="decompose",
-                content=task
+                content={
+                    "task": task
+                }
             )
-            decomposition_result = await self.llm_manager.parse_llm_response(llm_response)
+            decomposition = await self.llm_manager.parse_llm_response(llm_response)
             
+            if not decomposition or "primitive_tasks" not in decomposition:
+                self.logger.error("LLM response missing primitive_tasks")
+                return []
+
             primitive_tasks = []
-            for task_dict in decomposition_result["primitive_tasks"]:
-                primitive_task = self.convert_to_primitive_task(task_dict)
-                if validate_primitive_task(primitive_task):
+            for task_dict in decomposition["primitive_tasks"]:
+                try:
+                    primitive_task = PrimitiveTask(
+                        task_id=task_dict.get("task_id", str(uuid.uuid4())),
+                        type=task_dict.get("type", "shell_command"),
+                        command=task_dict.get("command", ""),
+                        working_directory=task_dict.get("working_directory", "./"),
+                        environment=task_dict.get("environment", {}),
+                        error_pattern=task_dict.get("error_pattern", ""),
+                        success_pattern=task_dict.get("success_pattern", ""),
+                        timeout_seconds=task_dict.get("timeout_seconds", 300),
+                        retry_count=task_dict.get("retry_count", 0),
+                        retry_delay_seconds=task_dict.get("retry_delay_seconds", 0),
+                        depends_on=task_dict.get("depends_on", []),
+                        cleanup_commands=task_dict.get("cleanup_commands", []),
+                        validation_commands=task_dict.get("validation_commands", [])
+                    )
                     primitive_tasks.append(primitive_task)
-                else:
-                    fixed_task = await self.auto_fix_task(primitive_task)
-                    if fixed_task:
-                        primitive_tasks.append(fixed_task)
-            
-            validation_issues = await self.validate_decomposition(task, primitive_tasks)
-            
-            if validation_issues:
-                refined_tasks = await self.refine_decomposition(primitive_tasks, validation_issues)
-                return refined_tasks
-            
+                except Exception as e:
+                    self.logger.error(f"Failed to create primitive task: {str(e)}")
+                    continue
+
             return primitive_tasks
-
         except Exception as e:
-            self.logger.error(f"Task decomposition failed: {e}")
-            raise TaskDecompositionError(f"Failed to decompose task: {e}")
+            self.logger.error(f"Task decomposition failed: {str(e)}")
+            return []
 
-    def is_primitive_description(self, task_description: dict) -> bool:
-        required_fields = {
-            'type', 'command', 'working_directory', 'environment',
-            'error_pattern', 'success_pattern', 'timeout_seconds'
+    async def auto_fix_task(self, task: PrimitiveTask) -> Optional[PrimitiveTask]:
+        """Attempt to automatically fix issues with a primitive task using LLM."""
+        try:
+            llm_response = await self.llm_manager.get_llm_response(
+                prompt_type="fix",
+                content={
+                    "task": asdict(task)
+                }
+            )
+            fix_result = await self.llm_manager.parse_llm_response(llm_response)
+            
+            if not fix_result or "fixed_task" not in fix_result:
+                self.logger.error("LLM response missing fixed_task")
+                return None
+
+            fixed_task_dict = fix_result["fixed_task"]
+            return PrimitiveTask(
+                task_id=fixed_task_dict.get("task_id", task.task_id),
+                type=fixed_task_dict.get("type", task.type),
+                command=fixed_task_dict.get("command", task.command),
+                working_directory=fixed_task_dict.get("working_directory", task.working_directory),
+                environment=fixed_task_dict.get("environment", task.environment),
+                error_pattern=fixed_task_dict.get("error_pattern", task.error_pattern),
+                success_pattern=fixed_task_dict.get("success_pattern", task.success_pattern),
+                timeout_seconds=fixed_task_dict.get("timeout_seconds", task.timeout_seconds),
+                retry_count=fixed_task_dict.get("retry_count", task.retry_count),
+                retry_delay_seconds=fixed_task_dict.get("retry_delay_seconds", task.retry_delay_seconds),
+                depends_on=fixed_task_dict.get("depends_on", task.depends_on),
+                cleanup_commands=fixed_task_dict.get("cleanup_commands", task.cleanup_commands),
+                validation_commands=fixed_task_dict.get("validation_commands", task.validation_commands)
+            )
+        except Exception as e:
+            self.logger.error(f"Task auto-fix failed: {str(e)}")
+            return None
+
+    def is_primitive_description(self, task: dict) -> bool:
+        """Check if a task description is already primitive"""
+        required_fields = {"task_id", "type", "command", "working_directory"}
+        return all(field in task for field in required_fields)
+
+    def convert_to_primitive_task(self, task_dict: dict) -> PrimitiveTask:
+        """Convert a dictionary to a PrimitiveTask object"""
+        # Ensure all required fields are present with defaults
+        task_dict = {
+            "task_id": task_dict.get("task_id", task_dict.get("id", str(uuid.uuid4()))),
+            "type": task_dict.get("type", "shell_command"),
+            "command": task_dict.get("command", ""),
+            "working_directory": task_dict.get("working_directory", "/tmp"),
+            "environment": task_dict.get("environment", {"PATH": "/usr/bin"}),
+            "error_pattern": task_dict.get("error_pattern", ".*error.*"),
+            "success_pattern": task_dict.get("success_pattern", ".*success.*"),
+            "timeout_seconds": task_dict.get("timeout_seconds", 30),
+            "retry_count": task_dict.get("retry_count", 3),
+            "retry_delay_seconds": task_dict.get("retry_delay_seconds", 5),
+            "depends_on": task_dict.get("depends_on", []),
+            "cleanup_commands": task_dict.get("cleanup_commands", []),
+            "validation_commands": task_dict.get("validation_commands", [])
         }
-        return all(field in task_description for field in required_fields)
+        return PrimitiveTask(**task_dict)
 
-    def convert_to_primitive_task(self, description: dict) -> PrimitiveTask:
-        return PrimitiveTask(
-            task_id=description.get('task_id', f"TASK_{uuid.uuid4().hex[:8]}"),
-            type=description['type'],
-            command=description['command'],
-            working_directory=description['working_directory'],
-            environment=description['environment'],
-            error_pattern=description['error_pattern'],
-            success_pattern=description['success_pattern'],
-            timeout_seconds=description['timeout_seconds'],
-            retry_count=description.get('retry_count', 3),
-            retry_delay_seconds=description.get('retry_delay_seconds', 5),
-            depends_on=description.get('depends_on', []),
-            cleanup_commands=description.get('cleanup_commands', []),
-            validation_commands=description.get('validation_commands', [])
-        )
-
-    async def validate_decomposition(self, 
+    async def validate_decomposition(self,
                                    original_task: dict,
                                    primitive_tasks: List[PrimitiveTask]) -> List[str]:
         issues = []
-        
+
         llm_response = await self.llm_manager.get_llm_response(
             prompt_type="validate",
             content={
@@ -97,20 +144,10 @@ class DecomposerAgent(BaseAgent):
             }
         )
         llm_validation = await self.llm_manager.parse_llm_response(llm_response)
-        
-        for validation_result in llm_validation["validation_results"]:
-            if not validation_result["is_valid"]:
-                issues.extend(validation_result["issues"])
-        
-        if not self.validate_dependencies(primitive_tasks):
-            issues.append("Invalid dependency structure detected")
-        
-        if not self.validate_environment(original_task, primitive_tasks):
-            issues.append("Missing environment variables")
-        
-        if not self.validate_file_operations(original_task, primitive_tasks):
-            issues.append("Invalid file operations detected")
-        
+
+        if not llm_validation.get("validation_results", {}).get("is_valid", False):
+            issues.extend(llm_validation.get("validation_results", {}).get("issues", []))
+
         return issues
 
     def validate_dependencies(self, primitive_tasks: List[PrimitiveTask]) -> bool:
@@ -146,22 +183,32 @@ class DecomposerAgent(BaseAgent):
             return has_mkdir
         return True
 
-    async def auto_fix_task(self, task: PrimitiveTask) -> Optional[PrimitiveTask]:
-        fixed_task = PrimitiveTask(**asdict(task))
-        
-        if not Path(fixed_task.working_directory).is_absolute():
-            fixed_task.working_directory = str(Path(fixed_task.working_directory).absolute())
-        
-        if fixed_task.type == 'shell_command' and 'PATH' not in fixed_task.environment:
-            fixed_task.environment['PATH'] = '/usr/local/bin:/usr/bin:/bin'
-        
-        if fixed_task.timeout_seconds <= 0:
-            fixed_task.timeout_seconds = 30 if fixed_task.type == 'api_call' else 60
-        
-        if not fixed_task.cleanup_commands and fixed_task.type == 'file_operation':
-            fixed_task.cleanup_commands = [
-                f'rm -f {fixed_task.working_directory}/*.tmp',
-                f'rm -f {fixed_task.working_directory}/*.lock'
-            ]
-        
-        return fixed_task if validate_primitive_task(fixed_task) else None
+    async def refine_decomposition(self, primitive_tasks: List[PrimitiveTask], validation_issues: List[str]) -> List[PrimitiveTask]:
+        """Refine a task decomposition based on validation issues"""
+        await self.log_action("refine_decomposition", f"Refining {len(primitive_tasks)} tasks with {len(validation_issues)} issues")
+
+        try:
+            llm_response = await self.llm_manager.get_llm_response(
+                prompt_type="fix_validation",
+                content={
+                    "tasks": [asdict(task) for task in primitive_tasks],
+                    "issues": validation_issues
+                }
+            )
+            refinement_result = await self.llm_manager.parse_llm_response(llm_response)
+
+            refined_tasks = []
+            for task_dict in refinement_result["refined_tasks"]:
+                primitive_task = self.convert_to_primitive_task(task_dict)
+                if validate_primitive_task(primitive_task):
+                    refined_tasks.append(primitive_task)
+                else:
+                    fixed_task = await self.auto_fix_task(primitive_task)
+                    if fixed_task:
+                        refined_tasks.append(fixed_task)
+
+            return refined_tasks
+
+        except Exception as e:
+            self.logger.error(f"Task refinement failed: {e}")
+            return primitive_tasks  # Return original tasks if refinement fails

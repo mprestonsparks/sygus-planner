@@ -1,5 +1,8 @@
 # sygus-planner
-A Task Decomposition Engine: Automated conversion of high-level software development requirements into primitive operations using SyGuS (Syntax-Guided Synthesis), formal methods, and LLM reasoning.
+**A Task Decomposition Engine** <br>
+Automated conversion of high-level software development requirements into primitive (i.e., atomic) operations using SyGuS (Syntax-Guided Synthesis), formal methods, and LLM reasoning.
+
+<br>
 
 ## Directory Structure
 ``` plaintext
@@ -50,28 +53,32 @@ sygus-planner/
 
 ---
 
+<br>
+
 ## Installation & Development
 This project uses Docker to ensure consistent development across different platforms (Windows, macOS, Linux).
 
-### Quick Start
-1. For development (with live code updates):
+
+#### For development (with live code updates):
 ```bash
 docker-compose up -d
 docker-compose exec sygus-planner bash
 ```
 
-2. For running tests:
+#### For running tests:
 ```bash
 docker-compose run --rm sygus-planner python -m pytest
 ```
 
-3. For building and running without docker-compose:
+#### For building and running without docker-compose:
 ```bash
 docker build -t sygus-planner .
 docker run -it sygus-planner bash
 ```
 
-## Usage
+<br>
+
+## Usage Example
 ``` python
 from sygus_planner import DAGGenerationSystem
 

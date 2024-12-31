@@ -6,6 +6,7 @@ from ..core.data_structures import PrimitiveTask
 from typing import List, Dict, Set
 import uuid
 from dataclasses import asdict
+import logging
 
 class ErrorDetectorAgent(BaseAgent):
     def __init__(self):
@@ -16,6 +17,7 @@ class ErrorDetectorAgent(BaseAgent):
         self.llm_manager = LLMManager()
         self.known_error_patterns: Set[str] = set()
         self.detected_errors: List[dict] = []
+        self.logger = logging.getLogger(f"ErrorDetector_{str(uuid.uuid4())}")
 
     async def detect_potential_errors(self, task: PrimitiveTask) -> List[dict]:
         """Detect potential errors using both LLM and rule-based analysis"""
@@ -99,9 +101,9 @@ class ErrorDetectorAgent(BaseAgent):
         error_patterns = self.group_errors_by_type(all_errors)
         
         # 4. Enhance patterns with LLM insights
-        enhanced_patterns = self.combine_pattern_analyses(error_patterns, pattern_analysis)
+        combined_patterns = self.merge_analysis_results(error_patterns, pattern_analysis)
         
-        return enhanced_patterns
+        return combined_patterns
 
     async def perform_llm_pattern_analysis(self, errors: List[dict]) -> Dict:
         """Use LLM to analyze patterns in collected errors"""
@@ -128,20 +130,38 @@ class ErrorDetectorAgent(BaseAgent):
                 "priorities": []
             }
 
-    def combine_pattern_analyses(self, 
-                               rule_based_patterns: Dict[str, List[dict]], 
-                               llm_patterns: Dict) -> Dict[str, List[dict]]:
-        """Combine rule-based and LLM-based pattern analyses"""
-        combined_patterns = rule_based_patterns.copy()
-        
-        # Enhance with LLM insights
-        for pattern in llm_patterns.get("patterns", []):
-            pattern_type = pattern.get("type")
-            if pattern_type in combined_patterns:
-                # Add LLM insights to existing pattern type
-                combined_patterns[pattern_type].extend(pattern.get("insights", []))
-            else:
-                # Create new pattern type from LLM analysis
-                combined_patterns[pattern_type] = pattern.get("insights", [])
-        
-        return combined_patterns
+    def group_errors_by_type(self, errors: List[dict]) -> Dict[str, List[dict]]:
+        """Group errors by their type and calculate frequencies"""
+        error_groups = {}
+
+        for error in errors:
+            error_type = error.get("error_type", "unknown")
+            if error_type not in error_groups:
+                error_groups[error_type] = []
+            error_groups[error_type].append(error)
+
+        return error_groups
+
+    def merge_analysis_results(self,
+                             traditional_analysis: Dict[str, List[dict]],
+                             llm_analysis: Dict) -> Dict[str, List[dict]]:
+        """Merge traditional and LLM-based analysis results"""
+        merged_results = traditional_analysis.copy()
+
+        if "patterns" in llm_analysis:
+            for pattern in llm_analysis["patterns"]:
+                pattern_type = pattern.get("type", "llm_pattern")
+                if pattern_type not in merged_results:
+                    merged_results[pattern_type] = []
+                merged_results[pattern_type].append({
+                    "type": pattern_type,
+                    "description": pattern.get("description", ""),
+                    "frequency": pattern.get("frequency", 0),
+                    "severity": pattern.get("severity", "unknown")
+                })
+
+        return merged_results
+
+    async def log_action(self, action: str, details: any):
+        """Log an action with details"""
+        self.logger.info(f"Action: {action}, Details: {details}")

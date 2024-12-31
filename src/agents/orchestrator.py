@@ -16,6 +16,7 @@ from .error_detector import ErrorDetectorAgent
 from .feedback import FeedbackAgent
 from .state_manager import StateManager
 
+
 class OrchestratorAgent(BaseAgent):
     def __init__(self):
         super().__init__(
@@ -24,10 +25,10 @@ class OrchestratorAgent(BaseAgent):
         )
         self.state_manager = StateManager()
         self.decomposer = DecomposerAgent()
-        self.validator = ValidatorAgent()
+        self.llm_manager = LLMManager()
+        self.validator = ValidatorAgent(llm_manager=self.llm_manager)
         self.error_detector = ErrorDetectorAgent()
         self.feedback = FeedbackAgent()
-        self.llm_manager = LLMManager()
         self.react_history: List[ReActStep] = []
 
     async def orchestrate(self, high_level_tasks: List[dict]) -> Dict[str, Any]:
@@ -114,43 +115,45 @@ class OrchestratorAgent(BaseAgent):
             self.logger.error(f"LLM task analysis failed: {e}")
             return {"task_contexts": {}, "insights": []}
 
-    async def process_task_with_llm(self, 
-                                  task: dict, 
-                                  context: Optional[Dict] = None) -> ReActStep:
-        """Process a single task using ReAct pattern with LLM guidance"""
-        react_step = ReActStep.create(self.agent_id)
-        
+    async def process_task_with_llm(self, task: Dict, context: Optional[Dict] = None) -> ReActStep:
+        """Process a task using LLM-based reasoning"""
+        await self.log_action("process_task_with_llm", task)
+
         try:
-            # THOUGHT: Get LLM's analysis of the task
-            react_step.thought = await self.get_llm_thought(task, context)
-            
-            # ACTION: Decompose based on LLM guidance
-            react_step.action = "Decomposing task based on LLM analysis"
-            primitive_tasks = await self.decomposer.decompose_task(task)
-            
-            # OBSERVATION: Validate decomposition
-            validation_results = []
-            for p_task in primitive_tasks:
-                validation_result = await self.validator.validate_task(p_task)
-                validation_results.append(validation_result)
-            
-            react_step.observation = await self.get_llm_observation(
-                task, primitive_tasks, validation_results
+            # Get LLM analysis of task
+            llm_response = await self.llm_manager.get_llm_response(
+                prompt_type="task_analysis",
+                content=task
             )
-            
-            # REFLECTION: Get LLM's reflection and suggestions
-            react_step.reflection = await self.get_llm_reflection(
-                task, primitive_tasks, validation_results
+            analysis_result = await self.llm_manager.parse_llm_response(llm_response)
+
+            # Create ReAct step
+            thought = analysis_result.get("thought", "Analyzing task requirements and dependencies")
+            action = analysis_result.get("action", "Decomposing task based on analysis")
+            observation = analysis_result.get("observation", "Task analyzed for decomposition")
+            reflection = analysis_result.get("reflection", "Task analysis completed")
+
+            return ReActStep(
+                id=str(uuid.uuid4()),
+                thought=thought,
+                action=action,
+                observation=observation,
+                reflection=reflection,
+                timestamp=datetime.now(),
+                agent_id=self.agent_id
             )
-            
-            if all(v.is_valid for v in validation_results):
-                react_step.reflection = f"SUCCESS:{json.dumps([asdict(t) for t in primitive_tasks])}"
-            
-            return react_step
 
         except Exception as e:
-            react_step.reflection = f"ERROR:{str(e)}"
-            return react_step
+            self.logger.error(f"Task processing failed: {e}")
+            return ReActStep(
+                id=str(uuid.uuid4()),
+                thought="Error occurred during task processing",
+                action="Error handling",
+                observation=str(e),
+                reflection="Task processing failed with error",
+                timestamp=datetime.now(),
+                agent_id=self.agent_id
+            )
 
     async def get_llm_thought(self, task: dict, context: Optional[Dict]) -> str:
         """Get LLM's analysis and approach for processing a task"""
@@ -208,6 +211,20 @@ class OrchestratorAgent(BaseAgent):
         except Exception as e:
             return f"Error getting LLM reflection: {e}"
 
+    async def get_llm_insights(self, tasks: List[Dict]) -> List[str]:
+        """Get insights from LLM about the tasks"""
+        try:
+            llm_response = await self.llm_manager.get_llm_response(
+                prompt_type="task_analysis",
+                content={"tasks": tasks}
+            )
+            insights_result = await self.llm_manager.parse_llm_response(llm_response)
+            return insights_result.get("insights", [])
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get LLM insights: {e}")
+            return []
+
     async def validate_primitive(self, primitive: dict) -> bool:
         """Validate a single primitive task with LLM oversight"""
         try:
@@ -224,45 +241,100 @@ class OrchestratorAgent(BaseAgent):
             return False
 
     async def validate_dag_with_llm(self, tasks: List[PrimitiveTask]) -> ValidationResult:
-        """Validate the entire DAG with LLM oversight"""
-        # Get both traditional and LLM validation
-        traditional_result = await self.validator.validate_dag(tasks)
-        llm_result = await self.validator.perform_llm_dag_validation(tasks)
-        
-        # Combine results
-        all_issues = traditional_result.issues + llm_result.get("issues", [])
-        all_fixes = traditional_result.suggested_fixes + llm_result.get("suggested_fixes", [])
-        
-        return ValidationResult(
-            is_valid=traditional_result.is_valid and llm_result.get("is_valid", False),
-            issues=list(set(all_issues)),
-            suggested_fixes=list(set(all_fixes)),
-            validation_time=datetime.utcnow(),
-            validator_id=self.agent_id
-        )
+        """Validate the DAG using both traditional and LLM-based validation"""
+        await self.log_action("validate_dag_with_llm", f"Validating {len(tasks)} tasks")
 
-    async def generate_enhanced_feedback(self,
-                                      validation_result: ValidationResult,
-                                      error_patterns: Dict[str, List[dict]],
-                                      initial_analysis: Dict) -> Dict:
-        """Generate enhanced feedback with LLM insights"""
+        try:
+            # 1. Traditional validation
+            traditional_result = await self.validator.validate_dag(tasks)
+            if not traditional_result.is_valid:
+                return traditional_result
+
+            # 2. LLM-based validation
+            llm_validation = await self.perform_llm_validation(tasks)
+            if not llm_validation["is_valid"]:
+                return ValidationResult(
+                    is_valid=False,
+                    issues=llm_validation["issues"],
+                    suggested_fixes=llm_validation["suggested_fixes"],
+                    validation_time=datetime.now(),
+                    validator_id=self.validator.validator_id
+                )
+
+            return ValidationResult(
+                is_valid=True,
+                issues=[],
+                suggested_fixes=[],
+                validation_time=datetime.now(),
+                validator_id=self.validator.validator_id
+            )
+
+        except Exception as e:
+            self.logger.error(f"DAG validation failed: {e}")
+            return ValidationResult(
+                is_valid=False,
+                issues=[str(e)],
+                suggested_fixes=["Review DAG configuration"],
+                validation_time=datetime.now(),
+                validator_id=self.validator.validator_id
+            )
+
+    async def perform_llm_validation(self, tasks: List[PrimitiveTask]) -> Dict:
+        """Perform LLM-based validation of the DAG"""
+        try:
+            response = await self.llm_manager.get_llm_response(
+                prompt_type="validate_dag",
+                content=[task.dict() for task in tasks]
+            )
+            return await self.llm_manager.parse_llm_response(response)
+
+        except Exception as e:
+            self.logger.error(f"LLM validation failed: {e}")
+            return {
+                "is_valid": False,
+                "issues": [str(e)],
+                "suggested_fixes": ["Review DAG configuration"]
+            }
+
+    async def log_action(self, action: str, details: any) -> None:
+        """Log an action with details"""
+        self.logger.info(f"{action}: {details}")
+
+    async def generate_enhanced_feedback(
+        self,
+        validation_result: ValidationResult,
+        error_patterns: Dict[str, Any],
+        initial_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate enhanced feedback by combining validation results, error patterns, and initial analysis."""
         try:
             llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="generate_feedback",
+                prompt_type="feedback",
                 content={
                     "validation_result": asdict(validation_result),
                     "error_patterns": error_patterns,
                     "initial_analysis": initial_analysis
                 }
             )
-            
             feedback = await self.llm_manager.parse_llm_response(llm_response)
             return feedback
-            
         except Exception as e:
-            self.logger.error(f"Enhanced feedback generation failed: {e}")
+            self.logger.error(f"Failed to generate enhanced feedback: {str(e)}")
             return {
-                "summary": "Feedback generation failed",
-                "issues": [],
-                "recommendations": []
+                "feedback": [],
+                "suggestions": [],
+                "warnings": [str(e)]
+            }
+
+    async def generate_dag(self, input_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate a DAG from input tasks."""
+        try:
+            result = await self.orchestrate(input_tasks)
+            return result
+        except Exception as e:
+            self.logger.error(f"DAG generation failed: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "dag": None
             }

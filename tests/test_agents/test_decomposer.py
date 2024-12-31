@@ -53,7 +53,7 @@ class TestDecomposerAgent:
        assert all(isinstance(task, PrimitiveTask) for task in result)
 
    @pytest.mark.asyncio
-   async def test_validate_decomposition(self, decomposer, primitive_task):
+   async def test_validate_decomposition(self, decomposer, primitive_task, sample_task):
        tasks = [PrimitiveTask(**primitive_task)]
        issues = await decomposer.validate_decomposition(sample_task, tasks)
        assert isinstance(issues, list)

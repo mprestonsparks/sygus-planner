@@ -1,9 +1,8 @@
-# src/core/data_structures.py
-
-# src/core/data_structures.py
+"""Core data structures for the task decomposition system."""
 from dataclasses import dataclass
 from typing import Any, List, Dict, Set, Optional, Union
 from datetime import datetime
+import uuid
 
 @dataclass
 class PrimitiveTask:
@@ -61,24 +60,33 @@ class LLMResponse:
     finish_reason: str
     raw_response: Any
 
-@dataclass
 class ReActStep:
-    id: str
-    thought: str
-    action: str
-    observation: str
-    reflection: str
-    timestamp: datetime
-    agent_id: str
-    
+    """A step in the ReAct pattern execution"""
+    def __init__(self,
+                 id: str,
+                 thought: str,
+                 action: str,
+                 observation: str,
+                 timestamp: datetime,
+                 agent_id: str,
+                 reflection: Optional[str] = None):
+        self.id = id
+        self.thought = thought
+        self.action = action
+        self.observation = observation
+        self.timestamp = timestamp
+        self.agent_id = agent_id
+        self.reflection = reflection or ""
+
     @classmethod
     def create(cls, agent_id: str) -> 'ReActStep':
+        """Create a new ReAct step with default values"""
         return cls(
             id=str(uuid.uuid4()),
-            thought="",
-            action="",
+            thought="No thought generated",
+            action="No action taken",
             observation="",
-            reflection="",
-            timestamp=datetime.utcnow(),
-            agent_id=agent_id
+            timestamp=datetime.now(),
+            agent_id=agent_id,
+            reflection=""
         )

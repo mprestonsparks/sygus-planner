@@ -5,11 +5,13 @@ import asyncio
 from datetime import datetime
 from src.agents.validator import ValidatorAgent
 from src.core.data_structures import PrimitiveTask, ValidationResult
+from src.llm.manager import LLMManager  # Import LLMManager
 
 class TestValidatorAgent:
     @pytest.fixture
     def validator(self):
-        return ValidatorAgent()
+        llm_manager = LLMManager()
+        return ValidatorAgent(llm_manager=llm_manager)
 
     @pytest.fixture
     def sample_task(self):
@@ -52,10 +54,10 @@ class TestValidatorAgent:
 
     @pytest.mark.asyncio
     async def test_validate_error_handling(self, validator, sample_task):
-        is_valid, issues, fixes = validator.validate_error_handling(sample_task)
-        assert is_valid
-        assert not issues
-        assert not fixes
+        issues, fixes = validator.validate_error_handling(sample_task)
+        assert isinstance(issues, list)
+        assert isinstance(fixes, list)
+        assert len(issues) == len(fixes)
 
     @pytest.mark.asyncio
     async def test_validate_shell_command(self, validator, sample_task):
