@@ -15,28 +15,88 @@ class FeedbackAgent(BaseAgent):
         )
         self.llm_manager = LLMManager()
 
-    async def generate_feedback(self, 
-                              validation_result: ValidationResult,
-                              error_patterns: Dict[str, List[dict]],
-                              initial_analysis: Dict) -> Dict[str, Any]:
-        """Generate feedback based on validation results and error patterns"""
+    async def generate_feedback(self, task: Dict[str, Any], validation_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate feedback for a task using LLM"""
         try:
-            llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="generate_feedback",
-                content={
-                    "validation_result": validation_result,
-                    "error_patterns": error_patterns,
-                    "initial_analysis": initial_analysis
+            # Format input for LLM
+            feedback_input = {
+                "task": task,
+                "validation_results": validation_results,
+                "feedback_requirements": {
+                    "provide_suggestions": True,
+                    "explain_issues": True,
+                    "prioritize_fixes": True
                 }
-            )
+            }
             
-            feedback = await self.llm_manager.parse_llm_response(llm_response)
-            return feedback
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("feedback", task=feedback_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["feedback", "suggestions", "priority"]):
+                self.logger.error("LLM response missing feedback")
+                return {
+                    "feedback": ["Invalid LLM response format"],
+                    "suggestions": [],
+                    "priority": "high",
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+            # Add metadata
+            response.update({
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            return response
             
         except Exception as e:
-            self.logger.error(f"Feedback generation failed: {e}")
+            self.logger.error(f"Failed to generate feedback: {e}")
             return {
-                "summary": "Feedback generation failed",
+                "feedback": [str(e)],
                 "suggestions": [],
-                "error": str(e)
+                "priority": "high",
+                "timestamp": datetime.now().isoformat()
+            }
+
+    async def analyze_feedback_history(self, task_id: str, feedback_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze feedback history for a task using LLM"""
+        try:
+            # Format input for LLM
+            history_input = {
+                "task_id": task_id,
+                "feedback_history": feedback_history,
+                "analysis_requirements": {
+                    "identify_patterns": True,
+                    "track_improvements": True,
+                    "suggest_next_steps": True
+                }
+            }
+            
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("feedback_history", task=history_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["patterns", "improvements", "next_steps"]):
+                self.logger.error("LLM response missing history analysis")
+                return {
+                    "patterns": [],
+                    "improvements": [],
+                    "next_steps": [],
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+            # Add metadata
+            response.update({
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Failed to analyze feedback history: {e}")
+            return {
+                "patterns": [],
+                "improvements": [],
+                "next_steps": [],
+                "timestamp": datetime.now().isoformat()
             }

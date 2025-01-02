@@ -29,46 +29,28 @@ class DecomposerAgent(BaseAgent):
         self.known_primitives = set()
 
     async def decompose_task(self, task: Dict[str, Any]) -> List[PrimitiveTask]:
-        """Decompose a high-level task into primitive tasks using LLM."""
+        """Decompose a task into primitive tasks using LLM"""
         try:
-            llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="decompose",
-                content={
-                    "task": task
-                }
-            )
-            decomposition = await self.llm_manager.parse_llm_response(llm_response)
+            # Format task for LLM
+            task_input = {"task": task}
             
-            if not decomposition or "primitive_tasks" not in decomposition:
-                self.logger.error("LLM response missing primitive_tasks")
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("decompose", task=task_input)
+            
+            # Validate response has subtasks
+            if not response or "subtasks" not in response:
+                self.logger.error("LLM response missing subtasks")
                 return []
-
+                
+            # Convert subtasks to PrimitiveTask objects
             primitive_tasks = []
-            for task_dict in decomposition["primitive_tasks"]:
-                try:
-                    primitive_task = PrimitiveTask(
-                        task_id=task_dict.get("task_id", str(uuid.uuid4())),
-                        type=task_dict.get("type", "shell_command"),
-                        command=task_dict.get("command", ""),
-                        working_directory=task_dict.get("working_directory", "./"),
-                        environment=task_dict.get("environment", {}),
-                        error_pattern=task_dict.get("error_pattern", ""),
-                        success_pattern=task_dict.get("success_pattern", ""),
-                        timeout_seconds=task_dict.get("timeout_seconds", 300),
-                        retry_count=task_dict.get("retry_count", 0),
-                        retry_delay_seconds=task_dict.get("retry_delay_seconds", 0),
-                        depends_on=task_dict.get("depends_on", []),
-                        cleanup_commands=task_dict.get("cleanup_commands", []),
-                        validation_commands=task_dict.get("validation_commands", [])
-                    )
-                    primitive_tasks.append(primitive_task)
-                except Exception as e:
-                    self.logger.error(f"Failed to create primitive task: {str(e)}")
-                    continue
-
+            for subtask in response["subtasks"]:
+                primitive_tasks.append(self.convert_to_primitive_task(subtask))
+            
             return primitive_tasks
+            
         except Exception as e:
-            self.logger.error(f"Task decomposition failed: {str(e)}")
+            self.logger.error(f"Failed to decompose task: {e}")
             return []
 
     async def auto_fix_task(self, task: PrimitiveTask) -> Optional[PrimitiveTask]:
@@ -87,15 +69,28 @@ class DecomposerAgent(BaseAgent):
                 return None
 
             fixed_task_dict = fix_result["fixed_task"]
+            
+            # Ensure working directory is absolute
+            working_dir = fixed_task_dict.get("working_directory", task.working_directory)
+            if not working_dir.startswith('/'):
+                working_dir = os.path.abspath(working_dir)
+                working_dir = working_dir.replace('\\', '/')  # Convert Windows path to Unix style
+            
+            # Ensure environment has PATH
+            environment = fixed_task_dict.get("environment", task.environment)
+            if not environment or "PATH" not in environment:
+                environment = environment or {}
+                environment["PATH"] = "/usr/bin"
+            
             return PrimitiveTask(
                 task_id=fixed_task_dict.get("task_id", task.task_id),
                 type=fixed_task_dict.get("type", task.type),
                 command=fixed_task_dict.get("command", task.command),
-                working_directory=fixed_task_dict.get("working_directory", task.working_directory),
-                environment=fixed_task_dict.get("environment", task.environment),
+                working_directory=working_dir,
+                environment=environment,
                 error_pattern=fixed_task_dict.get("error_pattern", task.error_pattern),
                 success_pattern=fixed_task_dict.get("success_pattern", task.success_pattern),
-                timeout_seconds=fixed_task_dict.get("timeout_seconds", task.timeout_seconds),
+                timeout_seconds=max(fixed_task_dict.get("timeout_seconds", 0), task.timeout_seconds, 30),  # Ensure minimum 30s timeout
                 retry_count=fixed_task_dict.get("retry_count", task.retry_count),
                 retry_delay_seconds=fixed_task_dict.get("retry_delay_seconds", task.retry_delay_seconds),
                 depends_on=fixed_task_dict.get("depends_on", task.depends_on),

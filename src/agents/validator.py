@@ -246,80 +246,97 @@ class ValidatorAgent(BaseAgent):
 
         return len(issues) == 0, issues, fixes
 
-    async def validate_task(self, task: PrimitiveTask) -> ValidationResult:
-        """Validate a single primitive task using LLM."""
+    async def validate_task(self, task: Dict[str, Any]) -> ValidationResult:
+        """Validate a task using LLM"""
         try:
-            llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="validate_task",
-                content={
-                    "task": asdict(task)
-                }
-            )
-            validation = await self.llm_manager.parse_llm_response(llm_response)
+            # Format task for LLM
+            task_input = {"task": task}
             
-            if not validation or "validation_results" not in validation:
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("validate", task=task_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["is_valid", "issues", "suggested_fixes"]):
                 self.logger.error("LLM response missing validation_results")
                 return ValidationResult(
                     is_valid=False,
                     issues=["Invalid LLM response format"],
                     suggested_fixes=[],
-                    validation_time=datetime.utcnow(),
-                    validator_id=self.validator_id
+                    validation_time=datetime.now(),
+                    validator_id=str(uuid.uuid4())
                 )
-
-            results = validation["validation_results"]
+                
+            # Convert response to ValidationResult
             return ValidationResult(
-                is_valid=results.get("is_valid", False),
-                issues=results.get("issues", []),
-                suggested_fixes=results.get("suggested_fixes", []),
-                validation_time=datetime.utcnow(),
-                validator_id=self.validator_id
+                is_valid=response["is_valid"],
+                issues=response["issues"],
+                suggested_fixes=response["suggested_fixes"],
+                validation_time=datetime.now(),
+                validator_id=str(uuid.uuid4())
             )
+            
         except Exception as e:
-            self.logger.error(f"Task validation failed: {str(e)}")
+            self.logger.error(f"Failed to validate task: {e}")
             return ValidationResult(
                 is_valid=False,
                 issues=[str(e)],
                 suggested_fixes=[],
-                validation_time=datetime.utcnow(),
-                validator_id=self.validator_id
+                validation_time=datetime.now(),
+                validator_id=str(uuid.uuid4())
             )
 
-    async def validate_dag(self, tasks: List[PrimitiveTask]) -> ValidationResult:
-        """Validate a DAG of primitive tasks using LLM."""
+    async def validate_dag(self, tasks: List[Dict[str, Any]]) -> ValidationResult:
+        """Validate a DAG of tasks using LLM"""
         try:
-            llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="validate_dag",
-                content={
-                    "tasks": [asdict(task) for task in tasks]
-                }
-            )
-            validation = await self.llm_manager.parse_llm_response(llm_response)
+            # Format tasks for LLM
+            dag_input = {"tasks": tasks}
             
-            if not validation or "validation_results" not in validation:
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("validate_dag", tasks=dag_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["is_valid", "issues", "cycles_detected", "invalid_dependencies"]):
                 self.logger.error("LLM response missing validation_results")
                 return ValidationResult(
                     is_valid=False,
                     issues=["Invalid LLM response format"],
                     suggested_fixes=[],
-                    validation_time=datetime.utcnow(),
-                    validator_id=self.validator_id
+                    validation_time=datetime.now(),
+                    validator_id=str(uuid.uuid4())
                 )
-
-            results = validation["validation_results"]
+            
+            # Filter out any issues about empty dependencies for root tasks
+            filtered_issues = []
+            for issue in response["issues"]:
+                if "depends_on" in issue and "empty list" in issue.lower():
+                    # Skip this issue - empty dependencies are valid for root tasks
+                    continue
+                filtered_issues.append(issue)
+            
+            # Convert response to ValidationResult
+            suggested_fixes = []
+            if response.get("cycles_detected"):
+                suggested_fixes.append(f"Remove cycles: {', '.join(response['cycles_detected'])}")
+            if response.get("invalid_dependencies"):
+                suggested_fixes.append(f"Fix dependencies: {', '.join(response['invalid_dependencies'])}")
+            
+            # Set is_valid to True if the only issues were about empty dependencies
+            is_valid = not filtered_issues and not response.get("cycles_detected") and not response.get("invalid_dependencies")
+            
             return ValidationResult(
-                is_valid=results.get("is_valid", False),
-                issues=results.get("issues", []),
-                suggested_fixes=results.get("suggested_fixes", []),
-                validation_time=datetime.utcnow(),
-                validator_id=self.validator_id
+                is_valid=is_valid,
+                issues=filtered_issues,
+                suggested_fixes=suggested_fixes,
+                validation_time=datetime.now(),
+                validator_id=str(uuid.uuid4())
             )
+            
         except Exception as e:
-            self.logger.error(f"DAG validation failed: {str(e)}")
+            self.logger.error(f"Failed to validate DAG: {e}")
             return ValidationResult(
                 is_valid=False,
                 issues=[str(e)],
                 suggested_fixes=[],
-                validation_time=datetime.utcnow(),
-                validator_id=self.validator_id
+                validation_time=datetime.now(),
+                validator_id=str(uuid.uuid4())
             )

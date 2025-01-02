@@ -3,7 +3,7 @@
 from .base import BaseAgent
 from ..llm.manager import LLMManager
 from ..core.data_structures import PrimitiveTask
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Any
 import uuid
 from dataclasses import asdict
 import logging
@@ -84,83 +84,108 @@ class ErrorDetectorAgent(BaseAgent):
         
         return unique_errors
 
-    async def analyze_error_patterns(self, tasks: List[PrimitiveTask]) -> Dict[str, List[dict]]:
-        """Analyze error patterns across all tasks using both LLM and rule-based analysis"""
-        await self.log_action("analyze_patterns", f"Analyzing {len(tasks)} tasks")
-        
-        # 1. Collect errors from all tasks
-        all_errors = []
-        for task in tasks:
-            task_errors = await self.detect_potential_errors(task)
-            all_errors.extend(task_errors)
-        
-        # 2. Use LLM to analyze patterns in collected errors
-        pattern_analysis = await self.perform_llm_pattern_analysis(all_errors)
-        
-        # 3. Combine with traditional pattern analysis
-        error_patterns = self.group_errors_by_type(all_errors)
-        
-        # 4. Enhance patterns with LLM insights
-        combined_patterns = self.merge_analysis_results(error_patterns, pattern_analysis)
-        
-        return combined_patterns
-
-    async def perform_llm_pattern_analysis(self, errors: List[dict]) -> Dict:
-        """Use LLM to analyze patterns in collected errors"""
+    async def analyze_patterns(self, tasks: List[Dict[str, Any]], errors: List[str]) -> Dict[str, Any]:
+        """Analyze patterns in tasks and errors using LLM"""
         try:
-            llm_response = await self.llm_manager.get_llm_response(
-                prompt_type="pattern_analysis",
-                content={
-                    "errors": errors,
-                    "analysis_requirements": {
-                        "identify_common_patterns": True,
-                        "suggest_global_fixes": True,
-                        "prioritize_issues": True
-                    }
+            # Format input for LLM
+            analysis_input = {
+                "tasks": tasks,
+                "errors": errors,
+                "analysis_requirements": {
+                    "identify_common_patterns": True,
+                    "suggest_global_fixes": True,
+                    "prioritize_issues": True
                 }
-            )
+            }
             
-            return await self.llm_manager.parse_llm_response(llm_response)
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("pattern_analysis", tasks=analysis_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["common_patterns", "anti_patterns", "optimization_opportunities"]):
+                self.logger.error("LLM response missing pattern analysis")
+                return {
+                    "common_patterns": [],
+                    "anti_patterns": [],
+                    "optimization_opportunities": [],
+                    "global_recommendations": []
+                }
+                
+            return response
             
         except Exception as e:
-            self.logger.error(f"LLM pattern analysis failed: {e}")
+            self.logger.error(f"Failed to analyze patterns: {e}")
             return {
-                "patterns": [],
-                "global_fixes": [],
-                "priorities": []
+                "common_patterns": [],
+                "anti_patterns": [],
+                "optimization_opportunities": [],
+                "global_recommendations": []
             }
 
-    def group_errors_by_type(self, errors: List[dict]) -> Dict[str, List[dict]]:
-        """Group errors by their type and calculate frequencies"""
-        error_groups = {}
+    async def analyze_error_patterns(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze error patterns across tasks using LLM"""
+        try:
+            # Extract errors from tasks
+            errors = []
+            for task in tasks:
+                if "errors" in task:
+                    errors.extend(task["errors"])
+                if "issues" in task:
+                    errors.extend(task["issues"])
 
-        for error in errors:
-            error_type = error.get("error_type", "unknown")
-            if error_type not in error_groups:
-                error_groups[error_type] = []
-            error_groups[error_type].append(error)
+            # Analyze patterns if there are errors
+            if errors:
+                return await self.analyze_patterns(tasks, errors)
+            else:
+                return {
+                    "common_patterns": [],
+                    "anti_patterns": [],
+                    "optimization_opportunities": [],
+                    "global_recommendations": []
+                }
 
-        return error_groups
+        except Exception as e:
+            self.logger.error(f"Failed to analyze error patterns: {e}")
+            return {
+                "common_patterns": [],
+                "anti_patterns": [],
+                "optimization_opportunities": [],
+                "global_recommendations": []
+            }
 
-    def merge_analysis_results(self,
-                             traditional_analysis: Dict[str, List[dict]],
-                             llm_analysis: Dict) -> Dict[str, List[dict]]:
-        """Merge traditional and LLM-based analysis results"""
-        merged_results = traditional_analysis.copy()
-
-        if "patterns" in llm_analysis:
-            for pattern in llm_analysis["patterns"]:
-                pattern_type = pattern.get("type", "llm_pattern")
-                if pattern_type not in merged_results:
-                    merged_results[pattern_type] = []
-                merged_results[pattern_type].append({
-                    "type": pattern_type,
-                    "description": pattern.get("description", ""),
-                    "frequency": pattern.get("frequency", 0),
-                    "severity": pattern.get("severity", "unknown")
-                })
-
-        return merged_results
+    async def generate_feedback(self, validation_result: Dict[str, Any], error_patterns: Dict[str, Any], initial_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate enhanced feedback using LLM"""
+        try:
+            # Format input for LLM
+            feedback_input = {
+                "validation_result": validation_result,
+                "error_patterns": error_patterns,
+                "initial_analysis": initial_analysis
+            }
+            
+            # Get LLM response
+            response = await self.llm_manager.get_llm_response("feedback", task=feedback_input)
+            
+            # Validate response has required fields
+            if not response or not all(k in response for k in ["success", "issues", "recommendations", "priority_fixes"]):
+                self.logger.error("LLM response missing feedback")
+                return {
+                    "success": False,
+                    "issues": ["Invalid LLM response format"],
+                    "recommendations": [],
+                    "priority_fixes": []
+                }
+                
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate feedback: {e}")
+            return {
+                "success": False,
+                "issues": [str(e)],
+                "recommendations": [],
+                "priority_fixes": []
+            }
 
     async def log_action(self, action: str, details: any):
         """Log an action with details"""

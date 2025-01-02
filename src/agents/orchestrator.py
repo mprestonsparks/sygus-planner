@@ -127,18 +127,43 @@ class OrchestratorAgent(BaseAgent):
             )
             analysis_result = await self.llm_manager.parse_llm_response(llm_response)
 
-            # Create ReAct step
-            thought = analysis_result.get("thought", "Analyzing task requirements and dependencies")
-            action = analysis_result.get("action", "Decomposing task based on analysis")
-            observation = analysis_result.get("observation", "Task analyzed for decomposition")
-            reflection = analysis_result.get("reflection", "Task analysis completed")
+            # Decompose task into primitives
+            primitive_tasks = await self.decomposer.decompose_task(task)
+            if not primitive_tasks:
+                return ReActStep(
+                    id=str(uuid.uuid4()),
+                    thought="Task decomposition failed",
+                    action="Task decomposition",
+                    observation="No primitive tasks generated",
+                    reflection="FAILURE: Task decomposition produced no tasks",
+                    timestamp=datetime.now(),
+                    agent_id=self.agent_id
+                )
 
+            # Validate primitive tasks
+            valid_tasks = []
+            for primitive in primitive_tasks:
+                if await self.validate_primitive(asdict(primitive)):
+                    valid_tasks.append(primitive)
+
+            if not valid_tasks:
+                return ReActStep(
+                    id=str(uuid.uuid4()),
+                    thought="Task validation failed",
+                    action="Task validation",
+                    observation="No valid primitive tasks",
+                    reflection="FAILURE: No valid primitive tasks found",
+                    timestamp=datetime.now(),
+                    agent_id=self.agent_id
+                )
+
+            # Return success with valid primitive tasks
             return ReActStep(
                 id=str(uuid.uuid4()),
-                thought=thought,
-                action=action,
-                observation=observation,
-                reflection=reflection,
+                thought=analysis_result.get("thought", "Analyzing task requirements and dependencies"),
+                action=analysis_result.get("action", "Decomposing task based on analysis"),
+                observation=f"Generated {len(valid_tasks)} valid primitive tasks",
+                reflection=f"SUCCESS:{json.dumps([asdict(t) for t in valid_tasks])}",
                 timestamp=datetime.now(),
                 agent_id=self.agent_id
             )
@@ -150,7 +175,7 @@ class OrchestratorAgent(BaseAgent):
                 thought="Error occurred during task processing",
                 action="Error handling",
                 observation=str(e),
-                reflection="Task processing failed with error",
+                reflection="FAILURE: Task processing failed with error",
                 timestamp=datetime.now(),
                 agent_id=self.agent_id
             )
